@@ -30,6 +30,48 @@
 #define TQFTPSERV_TMP	"/data/vendor/tmp/tqftpserv"
 #endif
 
+/* The default mode bits for directories */
+#define TFTP_DEFAULT_DIR_MODE 0700
+
+/**
+ * struct instance_path_entry - maps a subsystem instance ID to its RFS path
+ * @instance: subsystem instance ID
+ * @path:     base directory for this instance's files (with trailing slash)
+ *
+ * Modelled after the downstream tftp_server_folders_path_prefix_map[].
+ * Using an explicit struct avoids the fragile "array index == instance - 1"
+ * assumption and makes it safe to add/reorder entries.
+ */
+struct instance_path_entry {
+	enum tftp_server_instance_id_type instance;
+	const char *path;
+};
+
+static const struct instance_path_entry instance_path_map[] = {
+	{ TFTP_SERVER_INSTANCE_ID_MSM_MPSS, FIRMWARE_BASE"rfs/msm/mpss/" },
+	{ TFTP_SERVER_INSTANCE_ID_MSM_ADSP, FIRMWARE_BASE"rfs/msm/adsp/" },
+	{ TFTP_SERVER_INSTANCE_ID_MDM_MPSS, FIRMWARE_BASE"rfs/mdm/mpss/" },
+	{ TFTP_SERVER_INSTANCE_ID_MDM_ADSP, FIRMWARE_BASE"rfs/mdm/adsp/" },
+	{ TFTP_SERVER_INSTANCE_ID_MDM_TN,   FIRMWARE_BASE"rfs/mdm/tn/"   },
+	{ TFTP_SERVER_INSTANCE_ID_APQ_GSS,  FIRMWARE_BASE"rfs/apq/gnss/" },
+	{ TFTP_SERVER_INSTANCE_ID_MSM_SLPI, FIRMWARE_BASE"rfs/msm/slpi/" },
+	{ TFTP_SERVER_INSTANCE_ID_MDM_SLPI, FIRMWARE_BASE"rfs/mdm/slpi/" },
+	{ TFTP_SERVER_INSTANCE_ID_MSM_CDSP, FIRMWARE_BASE"rfs/msm/cdsp/" },
+	{ TFTP_SERVER_INSTANCE_ID_MDM_CDSP, FIRMWARE_BASE"rfs/mdm/cdsp/" },
+};
+
+#define INSTANCE_PATH_MAP_SIZE \
+	(sizeof(instance_path_map) / sizeof(instance_path_map[0]))
+
+/* Subdirectories created under each instance base path */
+static const char * const instance_subdirs[] = {
+	"readwrite/",
+	"readonly/",
+};
+
+#define INSTANCE_SUBDIRS_SIZE \
+	(sizeof(instance_subdirs) / sizeof(instance_subdirs[0]))
+
 static int open_maybe_compressed(const char *path);
 
 static void read_fw_path_from_sysfs(char *outbuffer, size_t bufsize)
@@ -240,4 +282,122 @@ static int open_maybe_compressed(const char *path)
 	free(path_with_zstd_extension);
 
 	return fd;
+}
+
+/**
+ * instance_lookup_path() - look up the RFS path for a subsystem instance
+ * @instance: subsystem instance ID
+ *
+ * Return: path string on success, NULL if instance is not in the map
+ */
+static const char *instance_lookup_path(enum tftp_server_instance_id_type instance)
+{
+	size_t i;
+
+	for (i = 0; i < INSTANCE_PATH_MAP_SIZE; i++) {
+		if (instance_path_map[i].instance == instance)
+			return instance_path_map[i].path;
+	}
+	return NULL;
+}
+
+/**
+ * mkdir_p() - create a directory and all missing parent directories
+ * @path: full directory path to create
+ * @mode: permission bits for newly created directories
+ *
+ * Walks each component of @path and creates any missing directories,
+ * equivalent to 'mkdir -p'. Existing directories are silently skipped.
+ *
+ * Return: 0 on success, -1 on error (errno set)
+ */
+static int mkdir_p(const char *path, mode_t mode)
+{
+	char tmp[PATH_MAX];
+	char *p;
+	size_t len;
+
+	len = (size_t)snprintf(tmp, sizeof(tmp), "%s", path);
+	if (len >= sizeof(tmp)) {
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+
+	/* Strip trailing slash so the loop handles the leaf component too */
+	if (len > 1 && tmp[len - 1] == '/')
+		tmp[len - 1] = '\0';
+
+	/* Create each intermediate component */
+	for (p = tmp + 1; *p; p++) {
+		if (*p == '/') {
+			*p = '\0';
+			if (mkdir(tmp, mode) != 0 && errno != EEXIST)
+				return -1;
+			*p = '/';
+		}
+	}
+
+	/* Create the leaf directory */
+	if (mkdir(tmp, mode) != 0 && errno != EEXIST)
+		return -1;
+
+	return 0;
+}
+
+/**
+ * translate_folders_create_data_folders() - create data folders for subsystems
+ *
+ * Creates the base directory and readwrite/readonly subdirectories for each
+ * subsystem instance, equivalent to the downstream tftp_server behaviour.
+ *
+ * Return: 0 on success, -1 on error
+ */
+static int translate_folders_create_data_folders(void)
+{
+	char dir_path[PATH_MAX];
+	size_t i, j;
+	int result, error_count = 0;
+	const char *base;
+
+	for (i = 0; i < INSTANCE_PATH_MAP_SIZE; i++) {
+		base = instance_path_map[i].path;
+
+		/* Create the base directory */
+		result = mkdir_p(base, TFTP_DEFAULT_DIR_MODE);
+		if (result != 0 && errno != EEXIST) {
+			error_count++;
+			warn("Failed to create directory %s", base);
+		}
+
+		/* Create readwrite/ and readonly/ subdirectories */
+		for (j = 0; j < INSTANCE_SUBDIRS_SIZE; j++) {
+			if (snprintf(dir_path, sizeof(dir_path), "%s%s",
+				     base, instance_subdirs[j]) >= (int)sizeof(dir_path)) {
+				error_count++;
+				warn("Path too long: %s%s", base, instance_subdirs[j]);
+				continue;
+			}
+
+			result = mkdir_p(dir_path, TFTP_DEFAULT_DIR_MODE);
+			if (result != 0 && errno != EEXIST) {
+				error_count++;
+				warn("Failed to create directory %s", dir_path);
+			}
+		}
+	}
+
+	return (error_count > 0) ? -1 : 0;
+}
+
+/**
+ * translate_folders_init() - initialize folder structure at server startup
+ *
+ * Creates the per-subsystem RFS directory tree under FIRMWARE_BASE so that
+ * the TFTP server can serve files to each remote subsystem instance.
+ *
+ * Return: 0 on success, -1 on error
+ */
+int translate_folders_init(void)
+{
+	return translate_folders_create_data_folders();
 }
