@@ -22,7 +22,8 @@ enum tftp_server_instance_id_type {
 	TFTP_SERVER_INSTANCE_ID_MAX,
 };
 
-int translate_open(const char *path, int flags);
+int translate_open(const char *path, int flags,
+		   enum tftp_server_instance_id_type target_instance);
 int translate_folders_init(void);
 
 #endif

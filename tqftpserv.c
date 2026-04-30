@@ -77,6 +77,9 @@ struct tftp_client {
 	size_t rw_buf_size;
 	size_t blk_offset;
 	uint16_t blk_expected;
+
+	/* RFS subsystem instance this client belongs to */
+	enum tftp_server_instance_id_type instance_id;
 };
 
 static bool tftp_debug;
@@ -429,7 +432,8 @@ static int parse_options(const char *buf, size_t len, size_t *blksize,
 	return 0;
 }
 
-static void handle_rrq(const char *buf, size_t len, struct sockaddr_qrtr *sq)
+static void handle_rrq(const char *buf, size_t len, struct sockaddr_qrtr *sq,
+		       enum tftp_server_instance_id_type target_instance)
 {
 	struct tftp_client *client;
 	const char *filename;
@@ -513,7 +517,7 @@ static void handle_rrq(const char *buf, size_t len, struct sockaddr_qrtr *sq)
 		return;
 	}
 
-	fd = translate_open(filename, O_RDONLY);
+	fd = translate_open(filename, O_RDONLY, target_instance);
 	if (fd < 0) {
 		log_err("unable to open %s (%d), reject\n", filename, errno);
 		tftp_send_error(sock, TFTP_ERROR_ENOENT, "file not found");
@@ -544,6 +548,7 @@ static void handle_rrq(const char *buf, size_t len, struct sockaddr_qrtr *sq)
 	client->timeoutms = timeoutms;
 	client->seek = seek;
 	client->rw_buf_size = blksize * wsize;
+	client->instance_id = target_instance;
 
 	client->blk_buf = calloc(1, blksize + 4);
 	if (!client->blk_buf) {
@@ -587,7 +592,8 @@ out_close_sock:
 	close(sock);
 }
 
-static void handle_wrq(const char *buf, size_t len, struct sockaddr_qrtr *sq)
+static void handle_wrq(const char *buf, size_t len, struct sockaddr_qrtr *sq,
+		       enum tftp_server_instance_id_type target_instance)
 {
 	struct tftp_client *client;
 	const char *filename;
@@ -657,7 +663,7 @@ static void handle_wrq(const char *buf, size_t len, struct sockaddr_qrtr *sq)
 		}
 	}
 
-	fd = translate_open(filename, O_WRONLY | O_CREAT);
+	fd = translate_open(filename, O_WRONLY | O_CREAT, target_instance);
 	if (fd < 0) {
 		log_debug("unable to open %s (%d), reject\n", filename, errno);
 		tftp_send_error_to(sq, TFTP_ERROR_EACCESS, "Access violation");
@@ -689,6 +695,7 @@ static void handle_wrq(const char *buf, size_t len, struct sockaddr_qrtr *sq)
 	client->seek = seek;
 	client->rw_buf_size = blksize * wsize;
 	client->blk_expected = 1;
+	client->instance_id = target_instance;
 
 	client->blk_buf = calloc(1, blksize + 4);
 	if (!client->blk_buf) {
@@ -1053,10 +1060,10 @@ int main(int argc, char **argv)
 				opcode = buf[0] << 8 | buf[1];
 				switch (opcode) {
 				case OP_RRQ:
-					handle_rrq(buf, len, &sq);
+					handle_rrq(buf, len, &sq, id);
 					break;
 				case OP_WRQ:
-					handle_wrq(buf, len, &sq);
+					handle_wrq(buf, len, &sq, id);
 					break;
 				case OP_ERROR:
 					buf[len] = '\0';

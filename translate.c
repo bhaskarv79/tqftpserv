@@ -73,6 +73,7 @@ static const char * const instance_subdirs[] = {
 	(sizeof(instance_subdirs) / sizeof(instance_subdirs[0]))
 
 static int open_maybe_compressed(const char *path);
+static const char *instance_lookup_path(enum tftp_server_instance_id_type instance);
 
 static void read_fw_path_from_sysfs(char *outbuffer, size_t bufsize)
 {
@@ -238,23 +239,57 @@ static int translate_readwrite(const char *file, int flags)
 }
 
 /**
- * translate_open() - open file after translating path
+ * translate_open() - open file after translating path with instance awareness
+ * @path: requested file path from the TFTP client (no leading slash)
+ * @flags: flags to be passed to open(2)
+ * @target_instance: subsystem instance ID identifying the RFS client
  *
-
- * Strips /readonly/firmware/image and search among remoteproc firmware.
- * Replaces /readwrite with a temporary directory.
-
+ * Looks up the per-instance base directory from instance_path_map[] and
+ * opens the file relative to that directory.
+ *
+ * Return: opened fd on success, -1 otherwise
  */
-int translate_open(const char *path, int flags)
+int translate_open(const char *path, int flags,
+		   enum tftp_server_instance_id_type target_instance)
 {
-	if (!strncmp(path, READONLY_PATH, strlen(READONLY_PATH)))
-		return translate_readonly(path + strlen(READONLY_PATH));
-	else if (!strncmp(path, READWRITE_PATH, strlen(READWRITE_PATH)))
-		return translate_readwrite(path + strlen(READWRITE_PATH), flags);
+	char full_path[PATH_MAX];
+	const char *instance_folder;
+	int fd;
 
-	fprintf(stderr, "invalid path %s, rejecting\n", path);
-	errno = ENOENT;
-	return -1;
+	instance_folder = instance_lookup_path(target_instance);
+	if (!instance_folder) {
+		warn("No path mapping for instance %d, file %s",
+		     target_instance, path);
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (strlen(instance_folder) + strlen(path) + 1 > sizeof(full_path)) {
+		warn("Path too long for instance %d, file %s",
+		     target_instance, path);
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+
+	snprintf(full_path, sizeof(full_path), "%s%s", instance_folder, path);
+
+	/* Collapse any accidental double slashes (e.g. if path starts with /) */
+	{
+		char *src = full_path, *dst = full_path;
+		while (*src) {
+			if (*src == '/' && *(src + 1) == '/')
+				src++;
+			else
+				*dst++ = *src++;
+		}
+		*dst = '\0';
+	}
+
+	fd = open(full_path, flags, 0600);
+	if (fd < 0)
+		warn("failed to open %s", full_path);
+
+	return fd;
 }
 
 /* linux-firmware uses .zst as file extension */
