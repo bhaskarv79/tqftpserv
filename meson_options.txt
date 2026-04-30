@@ -2,3 +2,9 @@ option('systemd-unit-prefix',
   type: 'string',
   description: 'Directory for systemd system unit files'
 )
+
+option('rfs-base-dir',
+  type: 'string',
+  value: '/lib/firmware/',
+  description: 'Base directory for per-subsystem RFS folders (e.g. /lib/firmware/, /etc/, /data/). Must end with /.'
+)

@@ -13,6 +13,9 @@ prefix = get_option('prefix')
 zstd_dep = dependency('libzstd')
 add_project_arguments('-DHAVE_ZSTD', language : 'c')
 
+rfs_base_dir = get_option('rfs-base-dir')
+add_project_arguments('-DRFS_BASE_DIR="' + rfs_base_dir + '"', language : 'c')
+
 # Not required to build the executable,
 # only to automatically retrieve the install dir for unit files
 systemd = dependency('systemd', required : false)

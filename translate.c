@@ -16,8 +16,20 @@
 #include "translate.h"
 #include "zstd-decompress.h"
 
+/*
+ * RFS_BASE_DIR is the root under which per-subsystem RFS directories are
+ * created.  It can be overridden at build time via the meson 'rfs-base-dir'
+ * option or -DRFS_BASE_DIR=\"/path/\".  Typical values:
+ *   /lib/firmware/ - upstream default
+ *   /etc/          - Qualcomm LE reference distro
+ *   /data/         - Android-like data partition
+ */
+#ifndef RFS_BASE_DIR
+#define RFS_BASE_DIR "/lib/firmware/"
+#endif
+
 #ifndef ANDROID
-#define FIRMWARE_BASE	"/lib/firmware/"
+#define FIRMWARE_BASE	RFS_BASE_DIR
 #else
 #define FIRMWARE_BASE	"/vendor/firmware/"
 #endif
