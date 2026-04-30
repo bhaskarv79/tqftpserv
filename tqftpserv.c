@@ -907,6 +907,7 @@ static void print_usage(void)
 
 int main(int argc, char **argv)
 {
+	enum tftp_server_instance_id_type id;
 	struct tftp_client *client;
 	struct tftp_client *next;
 	struct sockaddr_qrtr sq;
@@ -919,7 +920,7 @@ int main(int argc, char **argv)
 	int opcode;
 	int opt;
 	int ret;
-	int fd;
+	int instance_fds[TFTP_SERVER_INSTANCE_ID_MAX];
 
 	while ((opt = getopt(argc, argv, "dh")) != -1) {
 		switch (opt) {
@@ -940,22 +941,33 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	fd = qrtr_open(0);
-	if (fd < 0) {
-		fprintf(stderr, "failed to open qrtr socket\n");
-		exit(1);
-	}
+	translate_folders_init();
 
-	ret = qrtr_publish(fd, 4096, 1, 0);
-	if (ret < 0) {
-		fprintf(stderr, "failed to publish service registry service\n");
-		exit(1);
+	/* Open one socket per subsystem instance so the instance ID is known
+	 * from which fd receives the RRQ/WRQ request.
+	 */
+	for (id = TFTP_SERVER_INSTANCE_ID_MSM_MPSS;
+	     id < TFTP_SERVER_INSTANCE_ID_MAX; id++) {
+		instance_fds[id] = qrtr_open(0);
+		if (instance_fds[id] < 0) {
+			fprintf(stderr, "failed to open qrtr socket for instance %d\n", id);
+			exit(1);
+		}
+		ret = qrtr_publish(instance_fds[id], 4096, id, 0);
+		if (ret < 0) {
+			fprintf(stderr, "failed to publish service for instance %d\n", id);
+			exit(1);
+		}
 	}
 
 	for (;;) {
 		FD_ZERO(&rfds);
-		FD_SET(fd, &rfds);
-		nfds = fd;
+		nfds = 0;
+		for (id = TFTP_SERVER_INSTANCE_ID_MSM_MPSS;
+		     id < TFTP_SERVER_INSTANCE_ID_MAX; id++) {
+			FD_SET(instance_fds[id], &rfds);
+			nfds = MAX(nfds, instance_fds[id]);
+		}
 
 		list_for_each_entry(client, &writers, node) {
 			FD_SET(client->sock, &rfds);
@@ -993,14 +1005,21 @@ int main(int argc, char **argv)
 			}
 		}
 
-		if (FD_ISSET(fd, &rfds)) {
+		/* Check each per-instance socket; id identifies the RFS client */
+		for (id = TFTP_SERVER_INSTANCE_ID_MSM_MPSS;
+		     id < TFTP_SERVER_INSTANCE_ID_MAX; id++) {
+			if (!FD_ISSET(instance_fds[id], &rfds))
+				continue;
+
 			sl = sizeof(sq);
-			len = recvfrom(fd, buf, sizeof(buf), 0, (void *)&sq, &sl);
+			len = recvfrom(instance_fds[id], buf, sizeof(buf), 0,
+				       (void *)&sq, &sl);
 			if (len < 0) {
 				ret = -errno;
 				if (ret != -ENETRESET)
-					fprintf(stderr, "recvfrom failed on control socket: %d\n", ret);
-				return ret;
+					fprintf(stderr, "recvfrom failed on instance %d socket: %d\n",
+						id, ret);
+				continue;
 			}
 
 			/* Ignore control messages */
@@ -1008,7 +1027,7 @@ int main(int argc, char **argv)
 				ret = qrtr_decode(&pkt, buf, len, &sq);
 				if (ret < 0) {
 					fprintf(stderr, "unable to decode qrtr packet\n");
-					return ret;
+					continue;
 				}
 
 				switch (pkt.type) {
@@ -1053,7 +1072,9 @@ int main(int argc, char **argv)
 		}
 	}
 
-	close(fd);
+	for (id = TFTP_SERVER_INSTANCE_ID_MSM_MPSS;
+	     id < TFTP_SERVER_INSTANCE_ID_MAX; id++)
+		close(instance_fds[id]);
 
 	return 0;
 }
